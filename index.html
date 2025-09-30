@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub File Explorer</title>
+  <style>
+    body { font-family: monospace; background: white; color: black; padding: 1rem; }
+    .container { max-width: 900px; margin: auto; }
+    .cursor-pointer { cursor: pointer; color: #1d4ed8; }
+    .cursor-pointer:hover { color: #7c3aed; }
+    .text-red { color: #dc2626; }
+    .text-gray { color: #4b5563; }
+    .border-b { border-bottom: 1px solid black; }
+    .border-t { border-top: 1px solid black; }
+    .pb-2 { padding-bottom: 0.5rem; }
+    .pt-2 { padding-top: 0.5rem; }
+    .mb-2 { margin-bottom: 0.5rem; }
+    .mt-2 { margin-top: 0.5rem; }
+    .mt-4 { margin-top: 1rem; }
+    pre { margin: 0; }
+    .whitespace-pre-wrap { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div class="container" id="explorer"></div>
+
+  <script>
+    const GITHUB_REPO = 'whitererr/website';
+    const GITHUB_BRANCH = 'main';
+    const ROOT_FOLDER = 'root';
+
+    let currentPath = [];
+    let directoryCache = {};
+    let currentItems = [];
+    let viewingFile = null;
+    let fileContent = '';
+
+    const explorer = document.getElementById('explorer');
+
+    function formatSize(bytes) {
+      if (!bytes) return '—';
+      if (bytes < 1024) return bytes + 'B';
+      if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + 'K';
+      return (bytes/(1024*1024)).toFixed(1) + 'M';
+    }
+
+    function formatPath() {
+      if (currentPath.length === 0) return '/';
+      return '/' + currentPath.join('/') + '/';
+    }
+
+    function formatLine(name, type, size) {
+      const typeIndicator = type === 'dir' ? '[DIR] ' : '[FILE]';
+      const displayName = type === 'dir' ? name + '/' : name;
+      return typeIndicator + displayName.padEnd(40) + size.toString().padStart(10);
+    }
+
+    async function fetchDirectoryContents(path) {
+      try {
+        const apiPath = path ? ROOT_FOLDER + '/' + path : ROOT_FOLDER;
+        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${apiPath}?ref=${GITHUB_BRANCH}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to fetch: ' + response.statusText);
+        const data = await response.json();
+        if (!Array.isArray(data)) throw new Error('Invalid response format');
+        const items = data
+          .filter(item => !item.name.startsWith('-'))
+          .map(item => ({
+            name: item.name,
+            type: item.type === 'dir' ? 'dir' : 'file',
+            path: item.path,
+            size: item.size
+          }));
+        items.sort((a,b) => {
+          if(a.type==='dir' && b.type!=='dir') return -1;
+          if(a.type!=='dir' && b.type==='dir') return 1;
+          return a.name.localeCompare(b.name);
+        });
+        return items;
+      } catch (err) {
+        throw err;
+      }
+    }
+
+    async function fetchFileContent(item) {
+      try {
+        const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${item.path}?ref=${GITHUB_BRANCH}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to fetch file: ' + response.statusText);
+        const data = await response.json();
+        if(data.content) return atob(data.content.replace(/\n/g,''));
+        return '>>> Unable to display file content';
+      } catch(err) {
+        return '>>> Error loading file: ' + err;
+      }
+    }
+
+    function parseUrlFile(content) {
+      const lines = content.split('\n');
+      for(const line of lines){
+        const trimmed = line.trim();
+        if(trimmed.startsWith('URL=') || trimmed.startsWith('URL =')) {
+          return trimmed.substring(trimmed.indexOf('=') + 1).trim();
+        }
+      }
+      return null;
+    }
+
+    async function loadDirectory() {
+      explorer.innerHTML = '<pre>Loading directory...</pre>';
+      const pathKey = currentPath.join('/');
+      if(directoryCache[pathKey]) {
+        currentItems = directoryCache[pathKey];
+        renderDirectory();
+        return;
+      }
+      try {
+        currentItems = await fetchDirectoryContents(pathKey);
+        directoryCache[pathKey] = currentItems;
+        renderDirectory();
+      } catch(err) {
+        explorer.innerHTML = '<pre class="text-red">Error: '+ err.message +'</pre>';
+      }
+    }
+
+    async function handleFileClick(item) {
+      if(item.name.toLowerCase().endsWith('.url')) {
+        const content = await fetchFileContent(item);
+        const url = parseUrlFile(content);
+        if(url) window.location.href = url;
+        else alert('Could not find URL in .url file');
+      } else {
+        viewingFile = item;
+        fileContent = await fetchFileContent(item);
+        renderFile();
+      }
+    }
+
+    function navigateToDirectory(dirName) {
+      viewingFile = null;
+      currentPath.push(dirName);
+      loadDirectory();
+    }
+
+    function navigateUp() {
+      viewingFile = null;
+      currentPath.pop();
+      loadDirectory();
+    }
+
+    function renderDirectory() {
+      let html = '';
+      html += '<div class="border-b pb-2 mb-2"><pre class="font-bold">Index of ' + formatPath() + '</pre></div>';
+      html += '<pre class="text-gray">Type   Name                                      Size      </pre>';
+      html += '<pre class="text-gray">------ ---------------------------------------- ----------</pre>';
+
+      if(currentPath.length>0) {
+        html += `<pre class="cursor-pointer" onclick="navigateUp()">${formatLine('..','up','—')}</pre>`;
+      }
+
+      if(currentItems.length===0) {
+        html += '<pre class="mt-4 text-gray">Directory is empty</pre>';
+      } else {
+        currentItems.forEach(item => {
+          html += `<pre class="cursor-pointer" onclick="handleFileClickByName('${item.name}')">${formatLine(item.name,item.type,formatSize(item.size))}</pre>`;
+        });
+      }
+
+      explorer.innerHTML = html;
+    }
+
+    function renderFile() {
+      let html = '';
+      html += '<div class="border-b pb-2 mb-2"><pre class="font-bold">Viewing File: ' + formatPath() + viewingFile.name + '</pre></div>';
+      html += '<pre>Size: ' + formatSize(viewingFile.size) + '</pre>';
+      html += '<div class="border-t mt-2 pt-2"><pre class="whitespace-pre-wrap">' + fileContent + '</pre></div>';
+      html += '<pre class="mt-4 border-t pt-2">---------------------------------------------------------------------------------</pre>';
+      html += '<pre class="cursor-pointer" onclick="backToDirectory()">[BACK] Return to Directory Listing</pre>';
+      explorer.innerHTML = html;
+    }
+
+    function backToDirectory() {
+      viewingFile = null;
+      renderDirectory();
+    }
+
+    // Needed because onclick in string won't have `item`
+    window.handleFileClickByName = async function(name) {
+      const item = currentItems.find(i => i.name===name);
+      if(!item) return;
+      if(item.type==='dir') navigateToDirectory(item.name);
+      else handleFileClick(item);
+    }
+
+    window.navigateUp = navigateUp;
+
+    loadDirectory();
+  </script>
+</body>
+</html>
