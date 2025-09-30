@@ -1,0 +1,2 @@
+All files with a hyphen at the beginning are excluded from the website.
+They are primarily used as notes/comments to remember certain things.
